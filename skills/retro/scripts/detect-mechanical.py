@@ -199,11 +199,17 @@ A11_STRUCTURED_TOOLS = {"grep", "egrep", "fgrep", "sed", "awk", "gawk"}
 A11_CAT_TOOLS = {"cat", "head", "tail"}
 A11_PIPELINE_OPS = {"|", "||", "&&", ";", ">", ">>", "<"}
 
-# Redirect operators, as a subset of the above. Misuse 1 scans a segment's
-# tokens for the tool's file argument, and segments are split at `| || && ;`
-# only — so anything a redirect names still trails into the segment. Stopping
-# the scan here keeps a redirect target from being read as an argument.
-A11_REDIRECT_OPS = {">", ">>", "<", "<<<", "<<", "2>", "&>"}
+# Redirect operators. Misuse 1 scans a segment's tokens for the tool's file
+# argument, and segments are split at `| || && ;` only — so anything a redirect
+# names still trails into the segment. Stopping the scan there keeps a redirect
+# target from being read as an argument.
+#
+# Matched by shape rather than enumerated: shlex with punctuation_chars emits
+# `&>>`, `>|`, `>&`, `<&` and `<>` as single tokens, and a hand-written set
+# quietly misses whichever ones nobody thought of — each miss restoring the
+# false positive for that one spelling. A bare `|` cannot match (the pattern
+# requires a `<` or `>`), and is a segment separator anyway.
+A11_REDIRECT_RE = re.compile(r"(?:\d*[<>][<>&|]*|&>>?)\Z")
 # The Read tool addresses files in the project; it has no last-N-lines mode and
 # is not the way to poll a background task's output, a log, or a scratch file.
 # The harness gate that enforces "Read instead of cat/head/tail" says so
@@ -1365,7 +1371,7 @@ def _a11_structured_file_misuse(i: int, cmd: str, tokens: list[str]) -> dict | N
             # reads the file, sed edits the stream) reported as its own
             # violation, and a run of them drives C6 to demand a gate against
             # correct behaviour.
-            if tok in A11_REDIRECT_OPS:
+            if A11_REDIRECT_RE.match(tok):
                 break
             if tok.startswith("-"):
                 continue

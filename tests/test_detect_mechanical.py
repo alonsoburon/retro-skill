@@ -198,6 +198,21 @@ class TestSchichtA(unittest.TestCase):
         )
         self.assert_not_signal(evs, "A11")
 
+    def test_A11_every_redirect_spelling_is_recognised(self):
+        # shlex with punctuation_chars emits `&>>`, `>|`, `>&`, `<&` and `<>`
+        # as single tokens. An enumerated set misses whichever nobody thought
+        # of, and each miss restores the false positive for that one spelling,
+        # so the shapes are asserted rather than the membership list.
+        for op in (">", ">>", "&>>", ">|", ">&", "<&", "<>", "2>", "<<<"):
+            with self.subTest(op=op):
+                evs = tool_use_pair(
+                    "r",
+                    "Bash",
+                    {"command": f"sed 's/x/y/' {op} data/out.jsonl"},
+                    "ok",
+                )
+                self.assert_not_signal(evs, "A11")
+
     def test_A11_awk_reading_the_structured_file_still_fires(self):
         # Guards the fix above: the genuine misuse must survive it.
         evs = tool_use_pair(

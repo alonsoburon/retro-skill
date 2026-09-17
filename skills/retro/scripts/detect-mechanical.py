@@ -198,6 +198,12 @@ A11_STRUCTURED_EXT_RE = re.compile(
 A11_STRUCTURED_TOOLS = {"grep", "egrep", "fgrep", "sed", "awk", "gawk"}
 A11_CAT_TOOLS = {"cat", "head", "tail"}
 A11_PIPELINE_OPS = {"|", "||", "&&", ";", ">", ">>", "<"}
+
+# Redirect operators, as a subset of the above. Misuse 1 scans a segment's
+# tokens for the tool's file argument, and segments are split at `| || && ;`
+# only — so anything a redirect names still trails into the segment. Stopping
+# the scan here keeps a redirect target from being read as an argument.
+A11_REDIRECT_OPS = {">", ">>", "<", "<<<", "<<", "2>", "&>"}
 # The Read tool addresses files in the project; it has no last-N-lines mode and
 # is not the way to poll a background task's output, a log, or a scratch file.
 # The harness gate that enforces "Read instead of cat/head/tail" says so
@@ -1351,6 +1357,16 @@ def _a11_structured_file_misuse(i: int, cmd: str, tokens: list[str]) -> dict | N
             continue
         tool = segment[0]
         for tok in segment[1:]:
+            # A redirect target is never the tool's positional file argument.
+            # Segments split at `| || && ;` only, so a loop's own redirect —
+            # `while read …; do … sed 's|x||' …; done < data/opened.jsonl` —
+            # trails into the segment holding the body's sed/awk and gets
+            # attributed to it. That is the data-tools-prescribed form (jq
+            # reads the file, sed edits the stream) reported as its own
+            # violation, and a run of them drives C6 to demand a gate against
+            # correct behaviour.
+            if tok in A11_REDIRECT_OPS:
+                break
             if tok.startswith("-"):
                 continue
             if A11_STRUCTURED_EXT_RE.search(tok):

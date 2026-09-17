@@ -181,6 +181,30 @@ class TestSchichtA(unittest.TestCase):
         )
         self.assert_signal(evs, "A11")
 
+    def test_A11_loop_redirect_is_not_the_bodys_file_argument(self):
+        # Segments split at `| || && ;` only, so a loop's own redirect trails
+        # into the segment holding the body's sed/awk. Attributing it there
+        # reports the data-tools-prescribed form — jq reads the file, sed
+        # edits the stream — as a violation of data-tools, and a run of them
+        # drives C6 to demand a gate against correct behaviour.
+        evs = tool_use_pair(
+            "r",
+            "Bash",
+            {
+                "command": 'while read -r l; do V=$(jq -r .b <<<"$l" '
+                "| sed 's|release/||'); done < data/opened.jsonl"
+            },
+            "ok",
+        )
+        self.assert_not_signal(evs, "A11")
+
+    def test_A11_awk_reading_the_structured_file_still_fires(self):
+        # Guards the fix above: the genuine misuse must survive it.
+        evs = tool_use_pair(
+            "a", "Bash", {"command": "awk -F: '{print $1}' data/plan.jsonl"}, "ok"
+        )
+        self.assert_signal(evs, "A11")
+
     def test_A11_tail_on_background_task_output_does_not_fire(self):
         # Read addresses files in the project and has no last-N-lines mode;
         # polling a background task's output with tail is what the harness

@@ -46,6 +46,14 @@ DEFAULT_DB = "~/.local/share/opencode/opencode.db"
 RESULT_CHARS = 6000
 
 
+def _snippet(output: str) -> str:
+    """Head and tail of an over-long output: the error is at the top, the trace at the bottom."""
+    if len(output) <= RESULT_CHARS:
+        return output
+    half = RESULT_CHARS // 2
+    return output[:half] + "\n…\n" + output[-half:]
+
+
 def _connect(path: str) -> sqlite3.Connection:
     if not os.path.exists(path):
         raise SystemExit(f"opencode-transcript: no database at {path}")
@@ -60,8 +68,14 @@ def _connect(path: str) -> sqlite3.Connection:
 
 def find_session(conn: sqlite3.Connection, token: str) -> str:
     """The session whose parts carry `token`, or a refusal naming the ambiguity."""
+    # `_` and `%` are LIKE wildcards, so an unescaped token matches more than it
+    # says: `foo_bar` also finds `fooXbar`, and the extra session shows up as the
+    # ambiguity refusal below rather than as a wrong answer — but a token that is
+    # only wildcards matches everything.
+    escaped = token.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     rows = conn.execute(
-        "SELECT DISTINCT session_id FROM part WHERE data LIKE ?", (f"%{token}%",)
+        "SELECT DISTINCT session_id FROM part WHERE data LIKE ? ESCAPE '\\'",
+        (f"%{escaped}%",),
     ).fetchall()
     if not rows:
         raise SystemExit(f"opencode-transcript: no session carries {token!r}")
@@ -115,6 +129,10 @@ def render(conn: sqlite3.Connection, session_id: str) -> list[str]:
                             "input": payload,
                         }
                     )
+                # `pending` and `running` carry neither output nor error; emitting
+                # a result for them files an unfinished call as a successful one.
+                if state.get("status") in ("pending", "running"):
+                    continue
                 output = state.get("output")
                 if output is None:
                     output = state.get("error") or ""
@@ -122,7 +140,7 @@ def render(conn: sqlite3.Connection, session_id: str) -> list[str]:
                     {
                         "type": "tool_result",
                         "tool_use_id": tool_id,
-                        "content": str(output)[:RESULT_CHARS],
+                        "content": _snippet(str(output)),
                         "is_error": state.get("status") in ("error", "failed"),
                     }
                 )
@@ -162,7 +180,22 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("pass --match <token> or --session <id>")
 
     conn = _connect(os.path.expanduser(args.db))
-    session_id = args.session or find_session(conn, args.match or "")
+    if args.session:
+        session_id = args.session
+        # A mistyped id otherwise renders nothing and exits 0, which reads as an
+        # empty session. Asked of `message`, not of `session`: those are the rows
+        # the adapter goes on to read.
+        if (
+            conn.execute(
+                "SELECT 1 FROM message WHERE session_id=? LIMIT 1", (session_id,)
+            ).fetchone()
+            is None
+        ):
+            raise SystemExit(
+                f"opencode-transcript: no messages for session {session_id!r}"
+            )
+    else:
+        session_id = find_session(conn, args.match or "")
     lines = render(conn, session_id)
     sys.stdout.write("\n".join(lines) + "\n")
     return 0

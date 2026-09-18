@@ -78,6 +78,23 @@ def _database(path: str) -> None:
     conn.close()
 
 
+def _tool_part(path: str, part_id: str, call_id: str, state: dict) -> None:
+    """One more tool part on the assistant message, for the cases that need a second call."""
+    conn = sqlite3.connect(path)
+    conn.execute(
+        "INSERT INTO part VALUES (?,?,?,?,?)",
+        (
+            part_id,
+            "m2",
+            "s1",
+            9,
+            json.dumps({"type": "tool", "tool": "bash", "id": call_id, "state": state}),
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+
 class OpencodeTranscriptTest(unittest.TestCase):
     def setUp(self) -> None:
         tmp = tempfile.TemporaryDirectory()
@@ -128,6 +145,61 @@ class OpencodeTranscriptTest(unittest.TestCase):
         conn = adapter._connect(hostile)
         with self.assertRaises(sqlite3.OperationalError):
             conn.execute("CREATE TABLE injected (x)")
+
+    def test_a_like_wildcard_in_the_token_matches_only_itself(self) -> None:
+        """`_` is a LIKE wildcard: unescaped, `fix_the` would also find `fix the`."""
+        with self.assertRaises(SystemExit):
+            adapter.find_session(adapter._connect(self.db), "fix_the")
+
+    def test_an_unfinished_tool_call_produces_no_result_block(self) -> None:
+        """A `running` part has neither output nor error; a result for it reads as success."""
+        _tool_part(
+            self.db,
+            "p4",
+            "call-2",
+            {"status": "running", "input": {"command": "sleep"}},
+        )
+
+        lines = [
+            json.loads(line) for line in adapter.render(adapter._connect(self.db), "s1")
+        ]
+        results = [
+            b
+            for line in lines
+            for b in line["message"]["content"]
+            if b["type"] == "tool_result"
+        ]
+        self.assertEqual([r["tool_use_id"] for r in results], ["call-1"])
+
+    def test_an_over_long_output_keeps_its_head_and_its_tail(self) -> None:
+        """The comment on RESULT_CHARS promises both ends; a plain slice keeps only one."""
+        _tool_part(
+            self.db,
+            "p5",
+            "call-3",
+            {
+                "status": "completed",
+                "input": {"command": "build"},
+                "output": "E" * adapter.RESULT_CHARS + "T" * adapter.RESULT_CHARS,
+            },
+        )
+
+        lines = [
+            json.loads(line) for line in adapter.render(adapter._connect(self.db), "s1")
+        ]
+        content = next(
+            b["content"]
+            for line in lines
+            for b in line["message"]["content"]
+            if b.get("tool_use_id") == "call-3"
+        )
+        self.assertTrue(content.startswith("E"))
+        self.assertTrue(content.endswith("T"))
+        self.assertLessEqual(len(content), adapter.RESULT_CHARS + 3)
+
+    def test_an_unknown_session_id_is_refused_rather_than_rendered_empty(self) -> None:
+        with self.assertRaises(SystemExit):
+            adapter.main(["--session", "no-such-session", "--db", self.db])
 
     def test_the_detector_accepts_the_rendered_transcript(self) -> None:
         """The shape is only right if the CONSUMER takes it: no `KeyError: 'id'`."""

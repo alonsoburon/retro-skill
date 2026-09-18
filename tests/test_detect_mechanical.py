@@ -240,6 +240,37 @@ class TestSchichtA(unittest.TestCase):
                 )
                 self.assert_signal(evs, "A11")
 
+    def test_A11_sed_without_an_actual_address_still_fires(self):
+        # A bare `p` prints the whole file and is not a line address, so it
+        # must not ride the exemption written for one. Found by review: the
+        # first regex made both the digits and the `$` optional.
+        evs = tool_use_pair("s", "Bash", {"command": "sed -n 'p' compose.yml"}, "x")
+        self.assert_signal(evs, "A11")
+
+    def test_A11_sed_with_a_second_script_still_fires(self):
+        # Only the first script was validated, so an address in front of an
+        # edit bought the whole call an exemption. Both spellings carry two
+        # scripts — separate and bundled.
+        for command in (
+            "sed -n -e '1,80p' -e 's/x/y/' compose.yml",
+            "sed -ne '1,80p' -e 's/x/y/' compose.yml",
+        ):
+            with self.subTest(command=command):
+                evs = tool_use_pair("s", "Bash", {"command": command}, "x")
+                self.assert_signal(evs, "A11")
+
+    def test_A11_single_script_behind_dash_e_is_still_a_read(self):
+        # Guards the counter above: one `-e` is the ordinary spelling of the
+        # same read, and a long option that merely contains an "e" is not a
+        # script option.
+        for command in (
+            "sed -n -e '1,80p' compose.yml",
+            "sed -n --regexp-extended '1,80p' compose.yml",
+        ):
+            with self.subTest(command=command):
+                evs = tool_use_pair("s", "Bash", {"command": command}, "x")
+                self.assert_not_signal(evs, "A11")
+
     def test_A11_sed_line_address_without_quiet_flag_still_fires(self):
         # Without -n sed prints every line anyway, so an explicit address is
         # doing something other than paging through the file.

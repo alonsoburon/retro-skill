@@ -1356,7 +1356,7 @@ def _a11_is_presence_or_locate_grep(
 # and the `M,Np` form the Read tool cannot express when the file is not in the
 # project. Anchored whole, so `1,80s/a/b/p` and `/key/p` do not qualify — the
 # first edits, the second selects by content, and both are what A11 exists for.
-A11_SED_LINE_ADDRESS_RE = re.compile(r"\A\$?\d*(?:,(?:\$|\+?\d+))?p\Z")
+A11_SED_LINE_ADDRESS_RE = re.compile(r"\A(?:\$|\d+)(?:,(?:\$|\+?\d+))?p\Z")
 
 
 def _a11_is_line_addressed_read(segment: list[str]) -> bool:
@@ -1380,14 +1380,33 @@ def _a11_is_line_addressed_read(segment: list[str]) -> bool:
     """
     if segment[0] != "sed":
         return False
-    scripts = []
+    scripts: list[str] = []
     flags = ""
+    script_options = 0
     for tok in segment[1:]:
+        if tok.startswith("--"):
+            # Long options are matched whole. Counting an "e" inside them would
+            # read --regexp-extended as a second script and refuse a read that
+            # is one.
+            if tok in {"--expression", "--file"} or tok.startswith(
+                ("--expression=", "--file=")
+            ):
+                script_options += 1
+            continue
         if tok.startswith("-") and len(tok) > 1:
-            flags += tok.lstrip("-")
+            short = tok[1:]
+            flags += short
+            # Bundled as well as separate: `-ne '1,80p' -e 's/x/y/'` carries
+            # two scripts and only one of them is a line address.
+            script_options += short.count("e")
             continue
         if not scripts and not A11_STRUCTURED_EXT_RE.search(tok):
             scripts.append(tok)
+    if script_options > 1:
+        # More than one script means the addresses are not the whole story:
+        # only the first was ever validated, so `-e '1,80p' -e 's/x/y/'` bought
+        # an edit the exemption written for a read.
+        return False
     if "n" not in flags or "i" in flags:
         return False
     return bool(scripts) and all(A11_SED_LINE_ADDRESS_RE.match(s) for s in scripts)

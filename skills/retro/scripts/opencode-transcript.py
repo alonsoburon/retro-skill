@@ -37,6 +37,7 @@ import json
 import os
 import sqlite3
 import sys
+from urllib.parse import quote
 
 DEFAULT_DB = "~/.local/share/opencode/opencode.db"
 #: A block of a very large tool output is worth keeping for the friction signals
@@ -48,7 +49,13 @@ RESULT_CHARS = 6000
 def _connect(path: str) -> sqlite3.Connection:
     if not os.path.exists(path):
         raise SystemExit(f"opencode-transcript: no database at {path}")
-    return sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    # The path is percent-encoded: a name carrying its own `?query` would
+    # otherwise terminate the URI and override `mode=ro`, which is what the
+    # READ-ONLY promise above rests on. `abspath` settles the relative-path
+    # ambiguity `file:` URIs have.
+    return sqlite3.connect(
+        "file:" + quote(os.path.abspath(path)) + "?mode=ro", uri=True
+    )
 
 
 def find_session(conn: sqlite3.Connection, token: str) -> str:
@@ -60,7 +67,9 @@ def find_session(conn: sqlite3.Connection, token: str) -> str:
         raise SystemExit(f"opencode-transcript: no session carries {token!r}")
     if len(rows) > 1:
         names = ", ".join(r[0] for r in rows)
-        raise SystemExit(f"opencode-transcript: {token!r} matches {len(rows)} sessions: {names}")
+        raise SystemExit(
+            f"opencode-transcript: {token!r} matches {len(rows)} sessions: {names}"
+        )
     return rows[0][0]
 
 
@@ -92,12 +101,19 @@ def render(conn: sqlite3.Connection, session_id: str) -> list[str]:
             elif kind == "tool":
                 state = part.get("state") or {}
                 call = part.get("call") or {}
-                name = part.get("tool") or state.get("tool") or call.get("tool") or "tool"
+                name = (
+                    part.get("tool") or state.get("tool") or call.get("tool") or "tool"
+                )
                 payload = state.get("input") or call.get("input") or {}
                 tool_id = part.get("callID") or part.get("id") or row_id
                 if role == "assistant":
                     blocks.append(
-                        {"type": "tool_use", "id": tool_id, "name": name, "input": payload}
+                        {
+                            "type": "tool_use",
+                            "id": tool_id,
+                            "name": name,
+                            "input": payload,
+                        }
                     )
                 output = state.get("output")
                 if output is None:
@@ -113,14 +129,22 @@ def render(conn: sqlite3.Connection, session_id: str) -> list[str]:
         if blocks:
             lines.append(
                 json.dumps(
-                    {"type": role, "message": {"role": role, "content": blocks}, "timestamp": timestamp},
+                    {
+                        "type": role,
+                        "message": {"role": role, "content": blocks},
+                        "timestamp": timestamp,
+                    },
                     ensure_ascii=False,
                 )
             )
         if results:
             lines.append(
                 json.dumps(
-                    {"type": "user", "message": {"role": "user", "content": results}, "timestamp": timestamp},
+                    {
+                        "type": "user",
+                        "message": {"role": "user", "content": results},
+                        "timestamp": timestamp,
+                    },
                     ensure_ascii=False,
                 )
             )
@@ -132,7 +156,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--match", help="a token from the session under review")
     parser.add_argument("--session", help="the opencode session id, when it is known")
     parser.add_argument("--db", default=DEFAULT_DB)
-    parser.add_argument("--output", help="write here instead of stdout")
     args = parser.parse_args(argv)
 
     if not args.match and not args.session:
@@ -141,12 +164,7 @@ def main(argv: list[str] | None = None) -> int:
     conn = _connect(os.path.expanduser(args.db))
     session_id = args.session or find_session(conn, args.match or "")
     lines = render(conn, session_id)
-    text = "\n".join(lines) + "\n"
-    if args.output:
-        with open(args.output, "w", encoding="utf-8") as handle:
-            handle.write(text)
-    else:
-        sys.stdout.write(text)
+    sys.stdout.write("\n".join(lines) + "\n")
     return 0
 
 

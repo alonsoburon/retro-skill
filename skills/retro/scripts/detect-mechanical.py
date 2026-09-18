@@ -238,7 +238,11 @@ A13_CLAIM_PATTERNS = re.compile(
     r"|all\s+tests?\s+(?:pass|green)"  # "all tests pass" / "all tests green"
     r"|build\s+(?:passes|works|succeeds|succeeded)"
     r"|(?:the\s+)?bug\s+is\s+fixed"  # "the bug is fixed"
-    r"|behoben"  # DE: "fixed"
+    # DE: "fixed". Negative lookbehind because the English alternatives all
+    # carry a subject ("tests pass", "the bug is fixed") while a bare participle
+    # does not, so "nicht behoben" — a CORRECTION of an earlier claim — was
+    # counted as the claim itself, and C6 counts A13.
+    r"|(?<!nicht )(?<!noch nicht )behoben"
     r"|tests?\s+laufen(?:\s+(?:jetzt|wieder|durch))?"
     r"|läuft\s+jetzt(?:\s+wieder)?"  # DE: "läuft jetzt"
     r"|funktioniert\s+jetzt(?:\s+wieder)?"  # DE: "funktioniert jetzt"
@@ -1348,6 +1352,47 @@ def _a11_is_presence_or_locate_grep(
     return True
 
 
+# A sed script that only prints a line address: `5p`, `1,80p`, `12,+3p`, `$p`,
+# and the `M,Np` form the Read tool cannot express when the file is not in the
+# project. Anchored whole, so `1,80s/a/b/p` and `/key/p` do not qualify — the
+# first edits, the second selects by content, and both are what A11 exists for.
+A11_SED_LINE_ADDRESS_RE = re.compile(r"\A\$?\d*(?:,(?:\$|\+?\d+))?p\Z")
+
+
+def _a11_is_line_addressed_read(segment: list[str]) -> bool:
+    """True for a `sed -n <line-address>p` that reads a document, not a value.
+
+    `sed -n '1,80p' compose.yml` is the same question as opening the file: it
+    asks for a RANGE OF LINES, keeps comments and ordering, and has no field to
+    extract. yq cannot answer it — it reformats, drops comments and cannot
+    address line 80 at all. Reporting it as wrong-tool friction is the defect
+    `_a11_is_presence_or_locate_grep` already fixed for the grep half: C6 counts
+    A11 findings, so a run of ordinary document reads is read as proof that the
+    prose rule failed and escalates to "propose a mechanical gate" — here, a
+    gate against reading a file.
+
+    Measured on the session that produced this fix: 9 of 15 A11 hits were this
+    shape, and 2 were genuine extraction (`grep -H '^name:' *.yml`, an awk range
+    over compose.yml).
+
+    Only `-n` counts. Without it sed prints every line anyway, so an explicit
+    address is doing something other than paging through the file.
+    """
+    if segment[0] != "sed":
+        return False
+    scripts = []
+    flags = ""
+    for tok in segment[1:]:
+        if tok.startswith("-") and len(tok) > 1:
+            flags += tok.lstrip("-")
+            continue
+        if not scripts and not A11_STRUCTURED_EXT_RE.search(tok):
+            scripts.append(tok)
+    if "n" not in flags or "i" in flags:
+        return False
+    return bool(scripts) and all(A11_SED_LINE_ADDRESS_RE.match(s) for s in scripts)
+
+
 def _a11_structured_file_misuse(i: int, cmd: str, tokens: list[str]) -> dict | None:
     """Misuse 1: grep/sed/awk acting on a structured-file argument.
 
@@ -1360,6 +1405,8 @@ def _a11_structured_file_misuse(i: int, cmd: str, tokens: list[str]) -> dict | N
         if not segment or segment[0] not in A11_STRUCTURED_TOOLS:
             continue
         if _a11_is_presence_or_locate_grep(segment, pipeline):
+            continue
+        if _a11_is_line_addressed_read(segment):
             continue
         tool = segment[0]
         for tok in segment[1:]:

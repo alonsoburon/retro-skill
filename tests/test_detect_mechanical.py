@@ -213,6 +213,70 @@ class TestSchichtA(unittest.TestCase):
                 )
                 self.assert_not_signal(evs, "A11")
 
+    def test_A11_sed_line_range_read_does_not_fire(self):
+        # `sed -n '1,80p' compose.yml` asks for a range of LINES. It keeps
+        # comments and ordering, has no field to extract, and yq cannot answer
+        # it at all. Reporting it feeds C6, which then demands a gate against
+        # reading a file. 9 of the 15 A11 hits in the session that produced
+        # this test were this shape.
+        for script in ("1,80p", "75,80p", "5p", "$p", "12,+3p"):
+            with self.subTest(script=script):
+                evs = tool_use_pair(
+                    "s",
+                    "Bash",
+                    {"command": f"sed -n '{script}' compose.yml"},
+                    "services:",
+                )
+                self.assert_not_signal(evs, "A11")
+
+    def test_A11_sed_script_that_is_not_a_bare_line_address_still_fires(self):
+        # Guards the exemption above: only a line address qualifies. A content
+        # address selects by value and a substitution edits, which is what A11
+        # exists for.
+        for script in ("/^name:/p", "1,80s/a/b/p"):
+            with self.subTest(script=script):
+                evs = tool_use_pair(
+                    "s", "Bash", {"command": f"sed -n '{script}' compose.yml"}, "x"
+                )
+                self.assert_signal(evs, "A11")
+
+    def test_A11_sed_without_an_actual_address_still_fires(self):
+        # A bare `p` prints the whole file and is not a line address, so it
+        # must not ride the exemption written for one. Found by review: the
+        # first regex made both the digits and the `$` optional.
+        evs = tool_use_pair("s", "Bash", {"command": "sed -n 'p' compose.yml"}, "x")
+        self.assert_signal(evs, "A11")
+
+    def test_A11_sed_with_a_second_script_still_fires(self):
+        # Only the first script was validated, so an address in front of an
+        # edit bought the whole call an exemption. Both spellings carry two
+        # scripts — separate and bundled.
+        for command in (
+            "sed -n -e '1,80p' -e 's/x/y/' compose.yml",
+            "sed -ne '1,80p' -e 's/x/y/' compose.yml",
+        ):
+            with self.subTest(command=command):
+                evs = tool_use_pair("s", "Bash", {"command": command}, "x")
+                self.assert_signal(evs, "A11")
+
+    def test_A11_single_script_behind_dash_e_is_still_a_read(self):
+        # Guards the counter above: one `-e` is the ordinary spelling of the
+        # same read, and a long option that merely contains an "e" is not a
+        # script option.
+        for command in (
+            "sed -n -e '1,80p' compose.yml",
+            "sed -n --regexp-extended '1,80p' compose.yml",
+        ):
+            with self.subTest(command=command):
+                evs = tool_use_pair("s", "Bash", {"command": command}, "x")
+                self.assert_not_signal(evs, "A11")
+
+    def test_A11_sed_line_address_without_quiet_flag_still_fires(self):
+        # Without -n sed prints every line anyway, so an explicit address is
+        # doing something other than paging through the file.
+        evs = tool_use_pair("s", "Bash", {"command": "sed '1,80p' compose.yml"}, "x")
+        self.assert_signal(evs, "A11")
+
     def test_A11_awk_reading_the_structured_file_still_fires(self):
         # Guards the fix above: the genuine misuse must survive it.
         evs = tool_use_pair(
@@ -844,6 +908,32 @@ class TestSchichtA(unittest.TestCase):
                         }
                     ]
                 },
+            },
+        ]
+        self.assert_signal(evs, "A13")
+
+    def test_A13_negated_fix_is_not_a_success_claim(self):
+        # "nicht behoben" is a CORRECTION of an earlier claim, and the session
+        # that produced this test contained exactly that sentence. The English
+        # alternatives all carry a subject ("tests pass", "the bug is fixed");
+        # the bare German participle did not, so the retraction counted as the
+        # claim. C6 counts A13, so an inverted hit argues for a gate.
+        for text in ("der 500 ist nicht behoben", "das ist noch nicht behoben"):
+            with self.subTest(text=text):
+                evs = [
+                    {
+                        "type": "assistant",
+                        "message": {"content": [{"type": "text", "text": text}]},
+                    },
+                ]
+                self.assert_not_signal(evs, "A13")
+
+    def test_A13_plain_german_fix_claim_still_fires(self):
+        # Guards the negation lookbehind: the unqualified claim must survive.
+        evs = [
+            {
+                "type": "assistant",
+                "message": {"content": [{"type": "text", "text": "Alles behoben."}]},
             },
         ]
         self.assert_signal(evs, "A13")
